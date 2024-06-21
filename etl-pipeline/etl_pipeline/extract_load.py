@@ -1,16 +1,28 @@
 import pandas as pd
+import numpy as np
 from prefect import task
+from prefect.artifacts import create_table_artifact
 import requests
 import sqlite3
-from prefect.artifacts import create_table_artifact
 from dotenv import load_dotenv
 import os
 import logging
+import json
 
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def json_serial(obj):
+    """JSON serializer for objects not serializable by default json code"""
+    if isinstance(obj, (pd.Timestamp, pd.Timedelta)):
+        return obj.isoformat()
+    raise TypeError(f"Type {type(obj)} not serializable")
+
+def dataframe_to_json_serializable(df):
+    """Convert a DataFrame to a JSON-serializable format"""
+    return json.loads(json.dumps(df.to_dict(orient="records"), default=json_serial))
 
 @task(name="Extract Data from CoinGecko")
 def extract_data_task():
@@ -41,7 +53,7 @@ def extract_data_task():
 
     create_table_artifact(
         key="extracted-data",
-        table=df.to_dict(orient="records"),
+        table=dataframe_to_json_serializable(df),
         description="Extracted data from CoinGecko API"
     )
 
@@ -93,6 +105,6 @@ def load_data_task(data: pd.DataFrame):
 
     create_table_artifact(
         key="loaded-data",
-        table=data.to_dict(orient="records"),
+        table=dataframe_to_json_serializable(data),
         description="Data loaded into SQLite database"
     )
