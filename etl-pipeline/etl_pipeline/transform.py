@@ -37,7 +37,77 @@ def transform_data_task(data: pd.DataFrame) -> pd.DataFrame:
     logger.info(f"Initial data shape: {data.shape}")
 
     try:
-        # ... (rest of the transformation code remains the same)
+        # Convert timestamps
+        for col in ['last_updated', 'ath_date', 'atl_date']:
+            if col in data.columns:
+                data[col] = pd.to_datetime(data[col], utc=True)
+
+        # Numeric columns to process
+        numeric_columns = [
+            'current_price', 'market_cap', 'fully_diluted_valuation', 'total_volume', 'high_24h', 'low_24h',
+            'price_change_24h', 'price_change_percentage_24h', 'market_cap_change_24h',
+            'market_cap_change_percentage_24h', 'circulating_supply', 'total_supply',
+            'max_supply', 'ath', 'ath_change_percentage', 'atl', 'atl_change_percentage'
+        ]
+
+        for col in numeric_columns:
+            if col in data.columns:
+                data[col] = data[col].apply(lambda x: safe_convert(x, float))
+                logger.info(f"Processed {col}: min={data[col].min()}, max={data[col].max()}, mean={data[col].mean()}")
+
+        # Calculate additional metrics
+        data['volume_to_market_cap_ratio'] = data['total_volume'] / data['market_cap']
+        data['price_to_ath_ratio'] = data['current_price'] / data['ath']
+        data['market_dominance'] = data['market_cap'] / data['market_cap'].sum()
+        data['has_max_supply'] = data['max_supply'].notnull()
+        data['circulating_supply_percentage'] = data['circulating_supply'] / data['total_supply'] * 100
+        data['days_since_ath'] = (pd.Timestamp.now(tz='UTC') - data['ath_date']).dt.days
+        
+        # Categorize coins based on market cap
+        data['market_cap_category'] = pd.cut(
+            data['market_cap'],
+            bins=[0, 1e9, 10e9, 100e9, np.inf],
+            labels=['Small Cap', 'Mid Cap', 'Large Cap', 'Mega Cap']
+        )
+
+        # Volatility indicator (simplified)
+        data['volatility'] = (data['high_24h'] - data['low_24h']) / data['low_24h']
+
+        # Flag for significant price changes
+        data['significant_price_change'] = np.abs(data['price_change_percentage_24h']) > 5
+
+        # Extract year and month from last_updated for potential time-based analysis
+        data['year'] = data['last_updated'].dt.year
+        data['month'] = data['last_updated'].dt.month
+
+        # Handle missing values
+        data = data.fillna({
+            'circulating_supply': 0,
+            'total_supply': 0,
+            'max_supply': 0
+        })
+
+        # Parse ROI column
+        if 'roi' in data.columns:
+            data['roi'] = data['roi'].apply(parse_roi)
+            data['roi_times'] = data['roi'].apply(lambda x: x['times'])
+            data['roi_currency'] = data['roi'].apply(lambda x: x['currency'])
+            data['roi_percentage'] = data['roi'].apply(lambda x: x['percentage'])
+            data = data.drop('roi', axis=1)
+
+        # Ensure all coins have a rank (fill missing with max+1)
+        data['market_cap_rank'] = data['market_cap_rank'].fillna(data['market_cap_rank'].max() + 1)
+
+        # Log data quality metrics
+        for col in data.columns:
+            if data[col].dtype == 'object':
+                # For object columns, just count non-null values
+                non_null_count = data[col].count()
+                logger.info(f"{col}: {len(data) - non_null_count} null values")
+            else:
+                null_count = data[col].isnull().sum()
+                unique_count = data[col].nunique()
+                logger.info(f"{col}: {null_count} null values, {unique_count} unique values")
 
         logger.info(f"Final data shape: {data.shape}")
         logger.info(f"Columns after transformation: {data.columns.tolist()}")
