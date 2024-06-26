@@ -2,10 +2,14 @@ import pandas as pd
 import numpy as np
 from prefect import task
 from prefect.artifacts import create_table_artifact
+from prefect_aws import AwsCredentials
+import boto3
 import logging
 from datetime import datetime
 from typing import Dict, Any
 import json
+import os
+from io import StringIO
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -112,6 +116,31 @@ def transform_data_task(data: pd.DataFrame) -> pd.DataFrame:
         logger.info(f"Final data shape: {data.shape}")
         logger.info(f"Columns after transformation: {data.columns.tolist()}")
 
+        # Save transformed data to S3
+        aws_credentials = AwsCredentials.load("my-aws-creds")
+        
+        logger.info("AWS credentials loaded successfully")
+        logger.info(f"AWS Access Key ID: {aws_credentials.aws_access_key_id[:5]}...")
+        logger.info(f"AWS Secret Access Key length: {len(aws_credentials.aws_secret_access_key)}")
+        
+        s3 = boto3.client('s3', region_name='ap-southeast-2')
+        
+        bucket_name = os.getenv('AWS_S3_BUCKET_PROCESSED')
+        file_name = f'transformed_crypto_data_{pd.Timestamp.now().strftime("%Y%m%d%H%M%S")}.csv'
+        
+        csv_buffer = StringIO()
+        data.to_csv(csv_buffer)
+        
+        logger.info(f"Attempting to save transformed data to S3 bucket: {bucket_name}")
+        try:
+            s3.put_object(Bucket=bucket_name, Key=file_name, Body=csv_buffer.getvalue())
+            logger.info(f"Transformed data saved to S3: {bucket_name}/{file_name}")
+        except Exception as e:
+            logger.error(f"Failed to save transformed data to S3: {str(e)}")
+            logger.error(f"Error type: {type(e)}")
+            if hasattr(e, 'response'):
+                logger.error(f"Error response: {e.response}")
+
         create_table_artifact(
             key="transformed-data",
             table=dataframe_to_json_serializable(data.head(10)),
@@ -119,7 +148,7 @@ def transform_data_task(data: pd.DataFrame) -> pd.DataFrame:
         )
 
     except Exception as e:
-        logger.error(f"Error during transformation: {e}")
+        logger.error(f"Error during transformation: {str(e)}")
         raise
 
     return data
