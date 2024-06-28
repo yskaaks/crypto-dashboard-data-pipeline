@@ -2,8 +2,21 @@ from prefect_aws import AwsCredentials
 import os
 from dotenv import load_dotenv
 import boto3
+from prefect.infrastructure import DockerContainer
 
 load_dotenv()
+
+def create_docker_block():
+    # Create DockerContainer block
+    docker_block = DockerContainer(
+        image="crypto-etl:latest",
+        image_pull_policy="ALWAYS",
+        auto_remove=True,
+    )
+
+    # Save the block
+    docker_block.save("crypto-etl", overwrite=True)
+    print("Docker Container block 'crypto-etl' has been created.")
 
 def create_aws_credentials_block():
     aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
@@ -29,4 +42,5 @@ def create_aws_credentials_block():
         print(f"Error testing AWS credentials: {str(e)}")
 
 if __name__ == "__main__":
+    create_docker_block()
     create_aws_credentials_block()
