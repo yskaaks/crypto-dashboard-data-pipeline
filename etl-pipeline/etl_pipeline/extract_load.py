@@ -10,6 +10,8 @@ import os
 import logging
 import json
 from io import StringIO
+import time
+from psycopg2 import sql
 
 load_dotenv()
 
@@ -80,7 +82,6 @@ def extract_data_task():
     )
 
     return df
-
 @task(name="Load Data into RDS")
 def load_data_task(data: pd.DataFrame):
     if data.empty:
@@ -97,68 +98,85 @@ def load_data_task(data: pd.DataFrame):
     )
     
     cur = conn.cursor()
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS crypto_data (
-            id TEXT PRIMARY KEY,
-            symbol TEXT,
-            name TEXT,
-            current_price REAL,
-            market_cap REAL,
-            total_volume REAL,
-            high_24h REAL,
-            low_24h REAL,
-            price_change_24h REAL,
-            price_change_percentage_24h REAL,
-            market_cap_change_24h REAL,
-            market_cap_change_percentage_24h REAL,
-            circulating_supply REAL,
-            total_supply REAL,
-            max_supply REAL,
-            ath REAL,
-            ath_change_percentage REAL,
-            atl REAL,
-            atl_change_percentage REAL,
-            last_updated TIMESTAMP,
-            ath_date TIMESTAMP,
-            atl_date TIMESTAMP,
-            volume_to_market_cap_ratio REAL,
-            price_to_ath_ratio REAL,
-            market_dominance REAL,
-            has_max_supply BOOLEAN,
-            circulating_supply_percentage REAL,
-            days_since_ath INTEGER,
-            market_cap_category TEXT,
-            volatility REAL,
-            significant_price_change BOOLEAN,
-            year INTEGER,
-            month INTEGER,
-            roi_times REAL,
-            roi_currency TEXT,
-            roi_percentage REAL
-        )
-    ''')
-    logger.info("Created or updated table crypto_data")
- # Get the current columns in the database table
-    cur.execute("SELECT * FROM crypto_data LIMIT 0")
-    db_columns = [desc[0] for desc in cur.description]
-
-    # Filter the DataFrame to only include columns that exist in the database
-    data_to_insert = data[[col for col in data.columns if col in db_columns]]
-
-    # Use StringIO for efficient data insertion
-    buffer = StringIO()
-    data_to_insert.to_csv(buffer, index=False, header=False, na_rep='NULL')
-    buffer.seek(0)
 
     try:
-        cur.copy_from(buffer, 'crypto_data', sep=',', columns=data_to_insert.columns, null='NULL')
+        # Check if table exists
+        cur.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'crypto_data')")
+        table_exists = cur.fetchone()[0]
+
+        if not table_exists:
+            # Create table if it doesn't exist
+            create_table_query = """
+            CREATE TABLE crypto_data (
+                id TEXT PRIMARY KEY,
+                symbol TEXT,
+                name TEXT,
+                current_price REAL,
+                market_cap REAL,
+                total_volume REAL,
+                high_24h REAL,
+                low_24h REAL,
+                price_change_24h REAL,
+                price_change_percentage_24h REAL,
+                market_cap_change_24h REAL,
+                market_cap_change_percentage_24h REAL,
+                circulating_supply REAL,
+                total_supply REAL,
+                max_supply REAL,
+                ath REAL,
+                ath_change_percentage REAL,
+                atl REAL,
+                atl_change_percentage REAL,
+                last_updated TIMESTAMP,
+                ath_date TIMESTAMP,
+                atl_date TIMESTAMP
+                -- Add any additional columns here
+            )
+            """
+            cur.execute(create_table_query)
+            logger.info("Created new crypto_data table")
+
+        # Get the current columns in the database table
+        cur.execute("SELECT * FROM crypto_data LIMIT 0")
+        db_columns = [desc[0] for desc in cur.description]
+
+        # Filter the DataFrame to only include columns that exist in the database
+        data_to_insert = data[[col for col in data.columns if col in db_columns]]
+
+        # Create a temporary table
+        temp_table_name = f"temp_crypto_data_{int(time.time())}"
+        cur.execute(f"CREATE TEMP TABLE {temp_table_name} (LIKE crypto_data INCLUDING ALL)")
+
+        # Use StringIO for efficient data insertion into temp table
+        buffer = StringIO()
+        data_to_insert.to_csv(buffer, index=False, header=False, na_rep='NULL')
+        buffer.seek(0)
+
+        cur.copy_from(buffer, temp_table_name, sep=',', columns=data_to_insert.columns, null='NULL')
+        
+        # Upsert from temp table to main table
+        update_cols = [col for col in data_to_insert.columns if col != 'id']
+        update_stmt = ", ".join([f"{col} = excluded.{col}" for col in update_cols])
+        
+        cur.execute(sql.SQL("""
+            INSERT INTO crypto_data
+            SELECT * FROM {temp_table}
+            ON CONFLICT (id) DO UPDATE SET
+            {update_stmt}
+        """).format(
+            temp_table=sql.Identifier(temp_table_name),
+            update_stmt=sql.SQL(update_stmt)
+        ))
+
         conn.commit()
-        logger.info(f"Data loaded into RDS successfully. Inserted {len(data_to_insert)} rows.")
+        logger.info(f"Data loaded into RDS successfully. Upserted {len(data_to_insert)} rows.")
+
     except Exception as e:
         conn.rollback()
         logger.error(f"Error loading data into RDS: {str(e)}")
         raise
     finally:
+        cur.execute(f"DROP TABLE IF EXISTS {temp_table_name}")
         cur.close()
         conn.close()
 
